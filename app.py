@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import hashlib
 import io
 from datetime import datetime
@@ -217,46 +216,104 @@ st.markdown(f"""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-def try_auto_chart(df: pd.DataFrame):
-    """Render a chart if the dataframe looks chartable."""
-    if df is None or df.empty or len(df.columns) < 2:
-        return
-    num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(exclude="number").columns.tolist()
-    if not num_cols:
+def render_result_table(df: pd.DataFrame, key: str, ts: str):
+    """Render a styled HTML result table directly in the chat."""
+    if df is None or df.empty:
         return
 
-    try:
-        if cat_cols and len(df) <= 30:
-            fig = px.bar(
-                df, x=cat_cols[0], y=num_cols[0],
-                color_discrete_sequence=["#63b3ed"],
-                template="plotly_dark",
-                title=f"{num_cols[0]} by {cat_cols[0]}",
+    # Format numbers nicely
+    df_display = df.copy()
+    for col in df_display.select_dtypes(include="number").columns:
+        if df_display[col].dropna().apply(float.is_integer).all():
+            df_display[col] = df_display[col].apply(
+                lambda x: f"{int(x):,}" if pd.notna(x) else ""
             )
-            fig.update_layout(
-                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e",
-                font_color="#e2e8f0", margin=dict(t=40, b=20, l=20, r=20),
+        else:
+            df_display[col] = df_display[col].apply(
+                lambda x: f"{x:,.2f}" if pd.notna(x) else ""
             )
-            st.plotly_chart(fig, use_container_width=True)
-        elif len(num_cols) >= 1 and len(df) > 1:
-            fig = px.line(
-                df, y=num_cols[0],
-                color_discrete_sequence=["#63b3ed"],
-                template="plotly_dark",
-                title=num_cols[0],
-            )
-            fig.update_layout(
-                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e",
-                font_color="#e2e8f0", margin=dict(t=40, b=20, l=20, r=20),
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    except Exception:
-        pass
 
+    headers = "".join(f"<th>{col}</th>" for col in df_display.columns)
+    rows = ""
+    for _, row in df_display.iterrows():
+        cells = "".join(f"<td>{val}</td>" for val in row)
+        rows += f"<tr>{cells}</tr>"
 
-def export_csv(df: pd.DataFrame, label: str = "results") -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
+    row_count = len(df)
+    col_count = len(df.columns)
+
+    st.markdown(f"""
+    <style>
+    .result-table-wrap {{
+        background: #1a1f2e;
+        border: 1px solid #2d3748;
+        border-radius: 12px;
+        padding: 16px;
+        margin: 8px 0 16px 0;
+        overflow-x: auto;
+    }}
+    .result-meta {{
+        font-size: 0.72rem;
+        color: #718096;
+        margin-bottom: 10px;
+    }}
+    .result-meta span {{
+        background: rgba(99,179,237,0.1);
+        border: 1px solid rgba(99,179,237,0.2);
+        color: #63b3ed;
+        padding: 2px 8px;
+        border-radius: 10px;
+        margin-right: 6px;
+        font-size: 0.7rem;
+    }}
+    .result-table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+    }}
+    .result-table th {{
+        background: #0d1117;
+        color: #90cdf4;
+        font-weight: 600;
+        text-align: left;
+        padding: 10px 14px;
+        border-bottom: 2px solid #2d4a6e;
+        white-space: nowrap;
+        font-size: 0.78rem;
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+    }}
+    .result-table td {{
+        padding: 9px 14px;
+        color: #e2e8f0;
+        border-bottom: 1px solid #1e2535;
+        white-space: nowrap;
+    }}
+    .result-table tr:last-child td {{ border-bottom: none; }}
+    .result-table tr:hover td {{ background: rgba(99,179,237,0.04); }}
+    .result-table tr:nth-child(even) td {{ background: rgba(255,255,255,0.02); }}
+    .result-table tr:nth-child(even):hover td {{ background: rgba(99,179,237,0.04); }}
+    </style>
+    <div class="result-table-wrap">
+        <div class="result-meta">
+            <span>📊 {row_count} rows</span>
+            <span>🗂 {col_count} columns</span>
+        </div>
+        <table class="result-table">
+            <thead><tr>{headers}</tr></thead>
+            <tbody>{rows}</tbody>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.download_button(
+        "⬇️ Export CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name=f"query_{ts.replace(':','-')[:19]}.csv",
+        mime="text/csv",
+        key=f"dl_{key}",
+    )
+
 
 
 # ── Chat history ───────────────────────────────────────────────────────────────
@@ -276,22 +333,11 @@ for msg in st.session_state.messages:
         if msg.get("from_cache"):
             st.markdown('<span class="cache-hit">⚡ Cached result</span>', unsafe_allow_html=True)
         st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {msg["content"]}</div>', unsafe_allow_html=True)
-        if "sql" in msg or "dataframe" in msg:
-            with st.expander("🔍 View SQL & Full Data"):
-                if "sql" in msg:
-                    st.code(msg["sql"], language="sql")
-                if "dataframe" in msg:
-                    df_stored = msg["dataframe"]
-                    st.dataframe(df_stored, use_container_width=True)
-                    st.download_button(
-                        "⬇️ Export CSV",
-                        data=export_csv(df_stored),
-                        file_name=f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                        mime="text/csv",
-                        key=f"dl_{msg.get('ts','')}",
-                    )
         if "dataframe" in msg:
-            try_auto_chart(msg["dataframe"])
+            render_result_table(msg["dataframe"], key=msg.get("ts",""), ts=msg.get("ts",""))
+        if "sql" in msg:
+            with st.expander("🔍 View SQL Query"):
+                st.code(msg["sql"], language="sql")
 
 
 # ── Input ──────────────────────────────────────────────────────────────────────
@@ -326,21 +372,11 @@ if question:
 
             st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {explanation}</div>', unsafe_allow_html=True)
 
-            if sql or not df.empty:
-                with st.expander("🔍 View SQL & Full Data"):
-                    st.code(sql, language="sql")
-                    if not df.empty:
-                        st.dataframe(df, use_container_width=True)
-                        st.download_button(
-                            "⬇️ Export CSV",
-                            data=export_csv(df),
-                            file_name=f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv",
-                            key=f"dl_new_{ts}",
-                        )
-
             if not df.empty:
-                try_auto_chart(df)
+                render_result_table(df, key=f"new_{ts}", ts=ts)
+            if sql:
+                with st.expander("🔍 View SQL Query"):
+                    st.code(sql, language="sql")
 
             log_query(username, question, sql, len(df))
 
