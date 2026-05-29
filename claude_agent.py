@@ -9,26 +9,39 @@ load_dotenv(Path(__file__).parent / ".env", override=True)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-_SYSTEM_PROMPT = """You are a helpful senior data analyst assistant for a business team.
-You have access to a SQL Server data warehouse called DataWarehouseAnalytics with the following schema:
+_SYSTEM_PROMPT = """You are a senior T-SQL data analyst. Your ONLY job is to write SQL queries.
 
+Database: DataWarehouseAnalytics (SQL Server)
+Schema:
 {schema}
 
-Your job:
-1. Understand the user's business question written in plain English.
-2. Write a valid T-SQL SELECT query to answer it.
-3. Return ONLY the SQL query inside a ```sql ... ``` code block. Nothing else.
+STRICT RULES — NO EXCEPTIONS:
+1. ALWAYS return a ```sql ... ``` code block. Even if the question is complex or unclear.
+2. NEVER explain, apologize, or add text outside the code block.
+3. NEVER say "I cannot" or "this is complex" — always attempt the SQL.
+4. Only write SELECT statements — never DROP, DELETE, UPDATE, INSERT.
 
-Rules:
-- Always use fully qualified names: [gold].[dim_customers], [gold].[dim_products], [gold].[fact_sales]
-- Only write SELECT statements — never DROP, DELETE, UPDATE, INSERT
-- Use TOP 100 by default unless the user asks for more or requests aggregations
-- Use meaningful column aliases (e.g. total_sales, customer_name)
-- For joins: fact_sales joins dim_customers on customer_key, joins dim_products on product_key
-- For currency: use plain numbers (not strings), the UI handles formatting
-- If a question is ambiguous, make the most reasonable business assumption
-- Never use YEAR() or MONTH() — use DATEPART(YEAR, col) and DATEPART(MONTH, col) instead
-- Always wrap column/table names with brackets if they could conflict with reserved words
+SQL WRITING RULES:
+- Use fully qualified names: [gold].[dim_customers], [gold].[dim_products], [gold].[fact_sales]
+- Joins: fact_sales → dim_customers on customer_key | fact_sales → dim_products on product_key
+- Use DATEPART(YEAR, col) and DATEPART(MONTH, col) — never YEAR() or MONTH()
+- Use CTEs (WITH ...) for complex multi-step calculations like growth, rankings, percentages
+- For year-over-year growth: use LAG() window function or self-join with CTEs
+- For percentages: use CAST(col AS FLOAT) to avoid integer division
+- Use TOP 100 unless aggregating or the user specifies otherwise
+- Use clear aliases: total_sales, growth_pct, customer_name, order_year etc.
+- Always return numbers as numbers (not strings) — UI handles formatting
+
+EXAMPLE for "year over year growth":
+WITH yearly AS (
+  SELECT DATEPART(YEAR, order_date) AS order_year, SUM(sales_amount) AS total_sales
+  FROM [gold].[fact_sales] GROUP BY DATEPART(YEAR, order_date)
+)
+SELECT order_year, total_sales,
+  LAG(total_sales) OVER (ORDER BY order_year) AS prev_year_sales,
+  ROUND(CAST(total_sales - LAG(total_sales) OVER (ORDER BY order_year) AS FLOAT)
+    / NULLIF(LAG(total_sales) OVER (ORDER BY order_year), 0) * 100, 2) AS growth_pct
+FROM yearly ORDER BY order_year;
 """
 
 _REPAIR_PROMPT = """The following T-SQL query failed with an error. Fix it.
@@ -90,14 +103,33 @@ def _call_claude(messages: list, system: str = None, retries: int = 3) -> str:
 
 
 def extract_sql(text: str) -> str:
+    """Robustly extract SQL from Claude's response using multiple strategies."""
+    # Strategy 1: standard ```sql ... ``` block
     match = re.search(r"```sql\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
-    # Fallback: if no code block but looks like SQL
-    text = text.strip()
-    if text.upper().startswith("SELECT"):
-        return text
-    raise ValueError("Could not extract a valid SQL query from the AI response.")
+
+    # Strategy 2: any ``` ... ``` block
+    match = re.search(r"```\s*(SELECT|WITH).*?```", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        sql = re.sub(r"^```[a-z]*\s*", "", match.group(0)).rstrip("`").strip()
+        return sql
+
+    # Strategy 3: find SELECT or WITH anywhere in the text
+    match = re.search(r"(WITH\s+\w|\bSELECT\b).*", text, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+
+    # Strategy 4: entire response might just be SQL (no code block)
+    stripped = text.strip()
+    upper = stripped.upper()
+    if upper.startswith("SELECT") or upper.startswith("WITH"):
+        return stripped
+
+    raise ValueError(
+        "The AI could not generate a SQL query for this question. "
+        "Try rephrasing — for example: 'Show year over year sales growth by year'"
+    )
 
 
 def generate_sql(question: str, schema: str) -> str:
