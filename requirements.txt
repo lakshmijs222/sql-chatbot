@@ -4,5 +4,5 @@ sqlalchemy
 streamlit
 python-dotenv
 pandas
-plotly
 bcrypt
+markdown
