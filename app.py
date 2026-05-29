@@ -224,7 +224,7 @@ def render_result_table(df: pd.DataFrame, key: str, ts: str):
     # Format numbers nicely
     df_display = df.copy()
     for col in df_display.select_dtypes(include="number").columns:
-        if df_display[col].dropna().apply(float.is_integer).all():
+        if pd.api.types.is_integer_dtype(df_display[col]):
             df_display[col] = df_display[col].apply(
                 lambda x: f"{int(x):,}" if pd.notna(x) else ""
             )
