@@ -325,11 +325,11 @@ for msg in st.session_state.messages:
     else:
         st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {msg["content"]}</div>', unsafe_allow_html=True)
         if "sql" in msg:
-            with st.expander("🔍 View Generated SQL Query"):
+            with st.expander("🔍 View SQL Query & Full Results"):
                 st.code(msg["sql"], language="sql")
-        if "dataframe" in msg:
-            df = msg["dataframe"]
-            st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
+                if "dataframe" in msg:
+                    df = msg["dataframe"]
+                    st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
 
 # ── Input ──────────────────────────────────────────────────────────────────────
 prefill = st.session_state.pop("prefill", "")
@@ -348,10 +348,10 @@ if question:
             explanation = explain_results(question, sql, results_str)
 
             st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {explanation}</div>', unsafe_allow_html=True)
-            with st.expander("🔍 View Generated SQL Query"):
+            with st.expander("🔍 View SQL Query & Full Results"):
                 st.code(sql, language="sql")
-            if not df.empty:
-                st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
+                if not df.empty:
+                    st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
 
             msg = {"role": "assistant", "content": explanation, "sql": sql}
             if not df.empty:
