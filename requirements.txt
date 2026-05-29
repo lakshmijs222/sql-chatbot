@@ -1,0 +1,6 @@
+anthropic
+pyodbc
+sqlalchemy
+streamlit
+python-dotenv
+pandas
