@@ -1,7 +1,14 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import hashlib
+import io
+from datetime import datetime
 from database import get_schema, run_query
 from claude_agent import generate_sql, explain_results
+from auth import require_auth
+from logger import log_query
+import cache as query_cache
 
 st.set_page_config(
     page_title="DataWarehouse Analytics Chatbot",
@@ -10,305 +17,249 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ─────────────────────────────────────────────────────────────────
+# ── Auth gate ──────────────────────────────────────────────────────────────────
+require_auth()
+username = st.session_state.get("username", "user")
+
+# ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Main background */
     .stApp { background-color: #0f1117; }
-
-    /* Sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, #1a1f2e 0%, #151821 100%);
         border-right: 1px solid #2d3748;
     }
-
-    /* Hide default header */
     [data-testid="stHeader"] { background: transparent; }
 
-    /* Hero banner */
     .hero-banner {
         background: linear-gradient(135deg, #1e3a5f 0%, #0d2137 50%, #1a1040 100%);
         border: 1px solid #2d4a6e;
         border-radius: 16px;
-        padding: 32px 40px;
-        margin-bottom: 24px;
-        position: relative;
-        overflow: hidden;
+        padding: 28px 36px;
+        margin-bottom: 20px;
     }
-    .hero-banner::before {
-        content: '';
-        position: absolute;
-        top: -50%;
-        right: -10%;
-        width: 300px;
-        height: 300px;
-        background: radial-gradient(circle, rgba(99,179,237,0.08) 0%, transparent 70%);
-        border-radius: 50%;
-    }
-    .hero-title {
-        font-size: 2rem;
-        font-weight: 700;
-        color: #e2e8f0;
-        margin: 0 0 8px 0;
-        letter-spacing: -0.5px;
-    }
-    .hero-subtitle {
-        font-size: 1rem;
-        color: #718096;
-        margin: 0 0 20px 0;
-    }
-    .hero-badges {
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-    }
+    .hero-title { font-size:1.8rem; font-weight:700; color:#e2e8f0; margin:0 0 6px 0; }
+    .hero-sub { font-size:0.9rem; color:#718096; margin:0 0 16px 0; }
+    .hero-badges { display:flex; gap:8px; flex-wrap:wrap; }
     .badge {
-        background: rgba(99,179,237,0.1);
-        border: 1px solid rgba(99,179,237,0.3);
-        color: #63b3ed;
-        padding: 4px 12px;
-        border-radius: 20px;
-        font-size: 0.75rem;
-        font-weight: 500;
+        background: rgba(99,179,237,0.1); border:1px solid rgba(99,179,237,0.3);
+        color:#63b3ed; padding:3px 10px; border-radius:20px; font-size:0.72rem; font-weight:500;
     }
 
-    /* Stat cards */
-    .stats-row {
-        display: flex;
-        gap: 16px;
-        margin-bottom: 24px;
-    }
+    .stats-row { display:flex; gap:14px; margin-bottom:20px; }
     .stat-card {
-        flex: 1;
-        background: #1a1f2e;
-        border: 1px solid #2d3748;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        transition: border-color 0.2s;
+        flex:1; background:#1a1f2e; border:1px solid #2d3748;
+        border-radius:12px; padding:16px; text-align:center;
     }
-    .stat-card:hover { border-color: #4a90d9; }
-    .stat-number {
-        font-size: 1.8rem;
-        font-weight: 700;
-        color: #63b3ed;
-        display: block;
-    }
-    .stat-label {
-        font-size: 0.75rem;
-        color: #718096;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
+    .stat-number { font-size:1.6rem; font-weight:700; color:#63b3ed; display:block; }
+    .stat-label { font-size:0.7rem; color:#718096; text-transform:uppercase; letter-spacing:0.5px; }
 
-    /* Chat messages */
     .user-bubble {
-        background: linear-gradient(135deg, #2b4c7e, #1e3a5f);
-        border: 1px solid #2d4a6e;
-        border-radius: 16px 16px 4px 16px;
-        padding: 14px 18px;
-        margin: 8px 0;
-        color: #e2e8f0;
-        font-size: 0.95rem;
-        max-width: 80%;
-        margin-left: auto;
+        background: linear-gradient(135deg,#2b4c7e,#1e3a5f);
+        border:1px solid #2d4a6e; border-radius:16px 16px 4px 16px;
+        padding:12px 16px; margin:6px 0; color:#e2e8f0;
+        max-width:75%; margin-left:auto; font-size:0.92rem;
     }
     .assistant-bubble {
-        background: #1a1f2e;
-        border: 1px solid #2d3748;
-        border-left: 3px solid #63b3ed;
-        border-radius: 4px 16px 16px 16px;
-        padding: 14px 18px;
-        margin: 8px 0;
-        color: #e2e8f0;
-        font-size: 0.95rem;
-        max-width: 90%;
+        background:#1a1f2e; border:1px solid #2d3748;
+        border-left:3px solid #63b3ed; border-radius:4px 16px 16px 16px;
+        padding:14px 18px; margin:6px 0; color:#e2e8f0;
+        max-width:90%; font-size:0.92rem; line-height:1.6;
+    }
+    .cache-hit {
+        display:inline-block; font-size:0.7rem; color:#68d391;
+        background:rgba(104,211,145,0.1); border:1px solid rgba(104,211,145,0.3);
+        border-radius:10px; padding:2px 8px; margin-bottom:6px;
     }
 
-    /* Example question buttons */
     .stButton > button {
-        background: #1a1f2e !important;
-        border: 1px solid #2d3748 !important;
-        color: #a0aec0 !important;
-        border-radius: 8px !important;
-        text-align: left !important;
-        font-size: 0.8rem !important;
-        padding: 8px 12px !important;
-        width: 100% !important;
-        transition: all 0.2s !important;
+        background:#1a1f2e !important; border:1px solid #2d3748 !important;
+        color:#a0aec0 !important; border-radius:8px !important;
+        text-align:left !important; font-size:0.78rem !important;
+        padding:7px 10px !important; width:100% !important;
     }
     .stButton > button:hover {
-        border-color: #63b3ed !important;
-        color: #63b3ed !important;
-        background: rgba(99,179,237,0.05) !important;
+        border-color:#63b3ed !important; color:#63b3ed !important;
+        background:rgba(99,179,237,0.05) !important;
     }
 
-    /* Chat input */
     [data-testid="stChatInput"] textarea {
-        background: #1a1f2e !important;
-        border: 1px solid #2d3748 !important;
-        border-radius: 12px !important;
-        color: #e2e8f0 !important;
+        background:#1a1f2e !important; border:1px solid #2d3748 !important;
+        border-radius:12px !important; color:#e2e8f0 !important;
     }
-
-    /* Dataframe */
-    [data-testid="stDataFrame"] {
-        border: 1px solid #2d3748;
-        border-radius: 8px;
-        overflow: hidden;
-    }
-
-    /* Expander */
     [data-testid="stExpander"] {
-        background: #0d1117 !important;
-        border: 1px solid #2d3748 !important;
-        border-radius: 8px !important;
+        background:#0d1117 !important; border:1px solid #2d3748 !important;
+        border-radius:8px !important;
     }
-
-    /* Sidebar section headers */
     .sidebar-section {
-        font-size: 0.7rem;
-        font-weight: 600;
-        color: #4a5568;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        margin: 20px 0 8px 0;
+        font-size:0.68rem; font-weight:600; color:#4a5568;
+        text-transform:uppercase; letter-spacing:1px; margin:16px 0 6px 0;
     }
-
-    /* Status pill */
     .status-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        background: rgba(72,187,120,0.1);
-        border: 1px solid rgba(72,187,120,0.3);
-        color: #48bb78;
-        padding: 6px 14px;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 500;
-        margin-bottom: 16px;
+        display:inline-flex; align-items:center; gap:6px;
+        background:rgba(72,187,120,0.1); border:1px solid rgba(72,187,120,0.3);
+        color:#48bb78; padding:5px 12px; border-radius:20px;
+        font-size:0.78rem; font-weight:500; margin-bottom:12px;
     }
-
-    /* Schema table pill */
     .table-pill {
-        background: rgba(99,179,237,0.08);
-        border: 1px solid rgba(99,179,237,0.2);
-        border-radius: 8px;
-        padding: 8px 12px;
-        margin-bottom: 6px;
-        font-size: 0.8rem;
-        color: #90cdf4;
+        background:rgba(99,179,237,0.08); border:1px solid rgba(99,179,237,0.2);
+        border-radius:8px; padding:7px 10px; margin-bottom:5px;
+        font-size:0.78rem; color:#90cdf4;
     }
-
-    /* Empty state */
-    .empty-state {
-        text-align: center;
-        padding: 60px 20px;
-        color: #4a5568;
-    }
-    .empty-state-icon { font-size: 3rem; margin-bottom: 12px; }
-    .empty-state-title { font-size: 1.1rem; color: #718096; margin-bottom: 8px; }
-    .empty-state-sub { font-size: 0.85rem; color: #4a5568; }
+    .empty-state { text-align:center; padding:50px 20px; color:#4a5568; }
+    .empty-state-icon { font-size:2.8rem; margin-bottom:10px; }
+    .empty-state-title { font-size:1rem; color:#718096; margin-bottom:6px; }
+    .empty-state-sub { font-size:0.82rem; color:#4a5568; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Load schema ────────────────────────────────────────────────────────────────
+# ── Schema ─────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def load_schema():
     return get_schema()
 
-db_connected = False
-schema = ""
 try:
     schema = load_schema()
+    schema_hash = hashlib.md5(schema.encode()).hexdigest()
     db_connected = True
 except Exception as e:
     st.error(f"Database connection failed: {e}")
     st.stop()
 
 
+# ── Session state defaults ─────────────────────────────────────────────────────
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "total_queries" not in st.session_state:
+    st.session_state.total_queries = 0
+if "cache_hits" not in st.session_state:
+    st.session_state.cache_hits = 0
+
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## 📊 Analytics Assistant")
+    st.markdown(f"## 📊 Analytics Assistant")
+    st.markdown(f"<div style='font-size:0.78rem;color:#718096;margin-bottom:12px'>Signed in as <b style='color:#90cdf4'>{username}</b></div>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # Status
-    if db_connected:
-        st.markdown('<div class="status-pill">🟢 &nbsp; Database Connected</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div style="color:#fc8181">🔴 &nbsp; Disconnected</div>', unsafe_allow_html=True)
+    st.markdown('<div class="status-pill">🟢 &nbsp; Database Connected</div>', unsafe_allow_html=True)
 
-    # DB info
     st.markdown('<div class="sidebar-section">Data Source</div>', unsafe_allow_html=True)
     st.markdown('<div class="table-pill">🗄️ &nbsp; DataWarehouseAnalytics</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sidebar-section">Available Tables</div>', unsafe_allow_html=True)
-    for table, icon in [("gold.dim_customers", "👥"), ("gold.dim_products", "📦"), ("gold.fact_sales", "💰")]:
+    for table, icon in [("gold.dim_customers","👥"),("gold.dim_products","📦"),("gold.fact_sales","💰")]:
         st.markdown(f'<div class="table-pill">{icon} &nbsp; {table}</div>', unsafe_allow_html=True)
 
     st.markdown("---")
-
-    # Example questions
-    st.markdown('<div class="sidebar-section">Try asking</div>', unsafe_allow_html=True)
-    examples = [
-        "💰 Top 10 customers by total sales",
-        "📦 Best-selling products this year",
-        "📅 Monthly revenue trend",
-        "🌍 Sales breakdown by country",
-        "⚡ Average order value by category",
-        "👥 Customer count by gender",
-    ]
-    for ex in examples:
-        if st.button(ex, key=ex):
-            st.session_state["prefill"] = ex.split(" ", 1)[1]
+    st.markdown('<div class="sidebar-section">Session Stats</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    c1.metric("Queries", st.session_state.total_queries)
+    c2.metric("Cache Hits", st.session_state.cache_hits)
 
     st.markdown("---")
-    st.markdown('<div style="font-size:0.72rem; color:#4a5568; text-align:center;">Powered by Claude AI · SQL Server</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-section">Try asking</div>', unsafe_allow_html=True)
+    examples = [
+        ("💰", "Top 10 customers by total sales"),
+        ("📦", "Best-selling products this year"),
+        ("📅", "Monthly revenue trend"),
+        ("🌍", "Sales breakdown by country"),
+        ("⚡", "Average order value by category"),
+        ("👥", "Customer count by gender"),
+    ]
+    for icon, text in examples:
+        if st.button(f"{icon} {text}", key=text):
+            st.session_state["prefill"] = text
+
+    st.markdown("---")
+
+    # Clear chat
+    if st.button("🗑️ Clear Chat", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.total_queries = 0
+        st.session_state.cache_hits = 0
+        st.rerun()
+
+    # Logout
+    if st.button("🚪 Sign Out", use_container_width=True):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        st.rerun()
+
+    st.markdown('<div style="font-size:0.7rem;color:#4a5568;text-align:center;margin-top:10px">Powered by Claude AI · SQL Server</div>', unsafe_allow_html=True)
 
 
-# ── Hero Banner ────────────────────────────────────────────────────────────────
-st.markdown("""
+# ── Hero ───────────────────────────────────────────────────────────────────────
+st.markdown(f"""
 <div class="hero-banner">
     <div class="hero-title">📊 DataWarehouse Analytics Chatbot</div>
-    <div class="hero-subtitle">Ask any business question in plain English — get instant insights from your data</div>
+    <div class="hero-sub">Ask any business question in plain English — get instant insights from your data warehouse</div>
     <div class="hero-badges">
         <span class="badge">🤖 Claude AI</span>
         <span class="badge">🗄️ SQL Server</span>
-        <span class="badge">⚡ Real-time Query</span>
+        <span class="badge">⚡ Real-time</span>
         <span class="badge">💬 Natural Language</span>
+        <span class="badge">📊 Auto Charts</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
 
 # ── Stat cards ─────────────────────────────────────────────────────────────────
-st.markdown("""
+st.markdown(f"""
 <div class="stats-row">
-    <div class="stat-card">
-        <span class="stat-number">3</span>
-        <span class="stat-label">Tables Available</span>
-    </div>
-    <div class="stat-card">
-        <span class="stat-number">25+</span>
-        <span class="stat-label">Columns Mapped</span>
-    </div>
-    <div class="stat-card">
-        <span class="stat-number">∞</span>
-        <span class="stat-label">Questions You Can Ask</span>
-    </div>
-    <div class="stat-card">
-        <span class="stat-number">0</span>
-        <span class="stat-label">SQL Knowledge Needed</span>
-    </div>
+    <div class="stat-card"><span class="stat-number">3</span><span class="stat-label">Tables</span></div>
+    <div class="stat-card"><span class="stat-number">25+</span><span class="stat-label">Columns</span></div>
+    <div class="stat-card"><span class="stat-number">{st.session_state.total_queries}</span><span class="stat-label">Queries Run</span></div>
+    <div class="stat-card"><span class="stat-number">0</span><span class="stat-label">SQL Needed</span></div>
 </div>
 """, unsafe_allow_html=True)
 
-# ── Chat history ───────────────────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
 
-# Empty state
+# ── Helpers ────────────────────────────────────────────────────────────────────
+def try_auto_chart(df: pd.DataFrame):
+    """Render a chart if the dataframe looks chartable."""
+    if df is None or df.empty or len(df.columns) < 2:
+        return
+    num_cols = df.select_dtypes(include="number").columns.tolist()
+    cat_cols = df.select_dtypes(exclude="number").columns.tolist()
+    if not num_cols:
+        return
+
+    try:
+        if cat_cols and len(df) <= 30:
+            fig = px.bar(
+                df, x=cat_cols[0], y=num_cols[0],
+                color_discrete_sequence=["#63b3ed"],
+                template="plotly_dark",
+                title=f"{num_cols[0]} by {cat_cols[0]}",
+            )
+            fig.update_layout(
+                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e",
+                font_color="#e2e8f0", margin=dict(t=40, b=20, l=20, r=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        elif len(num_cols) >= 1 and len(df) > 1:
+            fig = px.line(
+                df, y=num_cols[0],
+                color_discrete_sequence=["#63b3ed"],
+                template="plotly_dark",
+                title=num_cols[0],
+            )
+            fig.update_layout(
+                plot_bgcolor="#1a1f2e", paper_bgcolor="#1a1f2e",
+                font_color="#e2e8f0", margin=dict(t=40, b=20, l=20, r=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+    except Exception:
+        pass
+
+
+def export_csv(df: pd.DataFrame, label: str = "results") -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+
+# ── Chat history ───────────────────────────────────────────────────────────────
 if not st.session_state.messages:
     st.markdown("""
     <div class="empty-state">
@@ -318,49 +269,93 @@ if not st.session_state.messages:
     </div>
     """, unsafe_allow_html=True)
 
-# Render messages
 for msg in st.session_state.messages:
     if msg["role"] == "user":
         st.markdown(f'<div class="user-bubble">🧑‍💼 &nbsp; {msg["content"]}</div>', unsafe_allow_html=True)
     else:
+        if msg.get("from_cache"):
+            st.markdown('<span class="cache-hit">⚡ Cached result</span>', unsafe_allow_html=True)
         st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {msg["content"]}</div>', unsafe_allow_html=True)
-        if "sql" in msg:
-            with st.expander("🔍 View SQL Query & Full Results"):
-                st.code(msg["sql"], language="sql")
+        if "sql" in msg or "dataframe" in msg:
+            with st.expander("🔍 View SQL & Full Data"):
+                if "sql" in msg:
+                    st.code(msg["sql"], language="sql")
                 if "dataframe" in msg:
-                    df = msg["dataframe"]
-                    st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
+                    df_stored = msg["dataframe"]
+                    st.dataframe(df_stored, use_container_width=True)
+                    st.download_button(
+                        "⬇️ Export CSV",
+                        data=export_csv(df_stored),
+                        file_name=f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                        mime="text/csv",
+                        key=f"dl_{msg.get('ts','')}",
+                    )
+        if "dataframe" in msg:
+            try_auto_chart(msg["dataframe"])
+
 
 # ── Input ──────────────────────────────────────────────────────────────────────
 prefill = st.session_state.pop("prefill", "")
-user_input = st.chat_input("Ask a question about your data — e.g. 'What is total revenue this year?'")
+user_input = st.chat_input("Ask a question — e.g. 'What is total revenue by year?'")
 question = user_input or prefill
 
 if question:
+    ts = datetime.now().isoformat()
     st.session_state.messages.append({"role": "user", "content": question})
     st.markdown(f'<div class="user-bubble">🧑‍💼 &nbsp; {question}</div>', unsafe_allow_html=True)
+    st.session_state.total_queries += 1
 
     with st.spinner("🤖 Analyzing your question..."):
         try:
-            sql = generate_sql(question, schema)
-            df = run_query(sql)
-            results_str = "No rows returned." if df.empty else df.head(20).to_string(index=False)
-            explanation = explain_results(question, sql, results_str)
+            # Check cache first
+            cached_sql, cached_df = query_cache.get(question, schema_hash)
+            from_cache = cached_sql is not None
+
+            if from_cache:
+                sql, df = cached_sql, cached_df
+                st.session_state.cache_hits += 1
+            else:
+                sql = generate_sql(question, schema)
+                df = run_query(sql)
+                query_cache.set(question, schema_hash, sql, df)
+
+            explanation = explain_results(question, sql, df)
+
+            if from_cache:
+                st.markdown('<span class="cache-hit">⚡ Cached result</span>', unsafe_allow_html=True)
 
             st.markdown(f'<div class="assistant-bubble">🤖 &nbsp; {explanation}</div>', unsafe_allow_html=True)
-            with st.expander("🔍 View SQL Query & Full Results"):
-                st.code(sql, language="sql")
-                if not df.empty:
-                    st.dataframe(df, use_container_width=True, height=min(400, 60 + len(df) * 35))
 
-            msg = {"role": "assistant", "content": explanation, "sql": sql}
+            if sql or not df.empty:
+                with st.expander("🔍 View SQL & Full Data"):
+                    st.code(sql, language="sql")
+                    if not df.empty:
+                        st.dataframe(df, use_container_width=True)
+                        st.download_button(
+                            "⬇️ Export CSV",
+                            data=export_csv(df),
+                            file_name=f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                            mime="text/csv",
+                            key=f"dl_new_{ts}",
+                        )
+
+            if not df.empty:
+                try_auto_chart(df)
+
+            log_query(username, question, sql, len(df))
+
+            msg = {"role": "assistant", "content": explanation, "sql": sql, "ts": ts, "from_cache": from_cache}
             if not df.empty:
                 msg["dataframe"] = df
             st.session_state.messages.append(msg)
 
         except ValueError as ve:
-            st.warning(f"⚠️ {ve}")
-            st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {ve}"})
+            err = f"⚠️ {ve}"
+            st.warning(err)
+            log_query(username, question, "", 0, str(ve))
+            st.session_state.messages.append({"role": "assistant", "content": err})
         except Exception as e:
-            st.error(f"❌ Something went wrong: {e}")
-            st.session_state.messages.append({"role": "assistant", "content": f"❌ Error: {e}"})
+            err = f"❌ Something went wrong: {e}"
+            st.error(err)
+            log_query(username, question, "", 0, str(e))
+            st.session_state.messages.append({"role": "assistant", "content": err})
