@@ -144,6 +144,158 @@ SELECT c.first_name + ' ' + c.last_name AS customer,
 FROM [gold].[fact_sales] f
 JOIN [gold].[dim_customers] c ON f.customer_key = c.customer_key
 GROUP BY c.first_name, c.last_name;
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATE OPERATIONS REFERENCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IMPORTANT DATE RULES:
+- NEVER use YEAR() or MONTH() — always use DATEPART(YEAR, col) / DATEPART(MONTH, col)
+- NEVER use GETDATE() for relative dates — use the MAX(order_date) from fact_sales as "today"
+  because the dataset may not be current. Example: DECLARE @today DATE = (SELECT MAX(order_date) FROM [gold].[fact_sales])
+- Always use CAST(col AS DATE) when comparing dates to strip time parts
+- For "this year" / "last year" — derive from MAX(order_date), not GETDATE()
+
+D1. SALES BY YEAR
+SELECT DATEPART(YEAR, order_date) AS order_year,
+  COUNT(DISTINCT order_number) AS total_orders,
+  SUM(sales_amount) AS total_sales
+FROM [gold].[fact_sales]
+GROUP BY DATEPART(YEAR, order_date)
+ORDER BY order_year;
+
+D2. SALES BY MONTH (specific year)
+SELECT DATEPART(YEAR, order_date) AS yr, DATEPART(MONTH, order_date) AS mo,
+  SUM(sales_amount) AS total_sales, COUNT(DISTINCT order_number) AS orders
+FROM [gold].[fact_sales]
+WHERE DATEPART(YEAR, order_date) = 2013
+GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date)
+ORDER BY yr, mo;
+
+D3. SALES BY QUARTER
+SELECT DATEPART(YEAR, order_date) AS yr,
+  DATEPART(QUARTER, order_date) AS quarter,
+  SUM(sales_amount) AS total_sales
+FROM [gold].[fact_sales]
+GROUP BY DATEPART(YEAR, order_date), DATEPART(QUARTER, order_date)
+ORDER BY yr, quarter;
+
+D4. SALES BY DAY OF WEEK
+SELECT DATENAME(WEEKDAY, order_date) AS day_name,
+  DATEPART(WEEKDAY, order_date) AS day_num,
+  COUNT(DISTINCT order_number) AS total_orders,
+  SUM(sales_amount) AS total_sales
+FROM [gold].[fact_sales]
+GROUP BY DATENAME(WEEKDAY, order_date), DATEPART(WEEKDAY, order_date)
+ORDER BY day_num;
+
+D5. THIS YEAR vs LAST YEAR (derived from data, not GETDATE)
+DECLARE @latest_year INT = (SELECT MAX(DATEPART(YEAR, order_date)) FROM [gold].[fact_sales]);
+SELECT
+  SUM(CASE WHEN DATEPART(YEAR, order_date) = @latest_year     THEN sales_amount ELSE 0 END) AS current_year_sales,
+  SUM(CASE WHEN DATEPART(YEAR, order_date) = @latest_year - 1 THEN sales_amount ELSE 0 END) AS previous_year_sales
+FROM [gold].[fact_sales];
+
+D6. LAST N DAYS (relative to latest date in data)
+DECLARE @ref_date DATE = (SELECT MAX(order_date) FROM [gold].[fact_sales]);
+SELECT * FROM [gold].[fact_sales]
+WHERE order_date >= DATEADD(DAY, -30, @ref_date)
+ORDER BY order_date DESC;
+
+D7. LAST N MONTHS
+DECLARE @ref_date DATE = (SELECT MAX(order_date) FROM [gold].[fact_sales]);
+SELECT DATEPART(YEAR, order_date) AS yr, DATEPART(MONTH, order_date) AS mo,
+  SUM(sales_amount) AS total_sales
+FROM [gold].[fact_sales]
+WHERE order_date >= DATEADD(MONTH, -6, @ref_date)
+GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date)
+ORDER BY yr, mo;
+
+D8. DATE RANGE FILTER (between two dates)
+SELECT * FROM [gold].[fact_sales]
+WHERE order_date BETWEEN '2013-01-01' AND '2013-12-31'
+ORDER BY order_date;
+
+D9. SHIPPING / DELIVERY TIME ANALYSIS
+SELECT order_number,
+  order_date, shipping_date, due_date,
+  DATEDIFF(DAY, order_date, shipping_date) AS days_to_ship,
+  DATEDIFF(DAY, order_date, due_date)      AS days_to_due,
+  CASE WHEN shipping_date > due_date THEN 'Late' ELSE 'On Time' END AS delivery_status
+FROM [gold].[fact_sales]
+ORDER BY days_to_ship DESC;
+
+D10. AVERAGE SHIPPING TIME BY YEAR
+SELECT DATEPART(YEAR, order_date) AS yr,
+  AVG(CAST(DATEDIFF(DAY, order_date, shipping_date) AS FLOAT)) AS avg_days_to_ship
+FROM [gold].[fact_sales]
+WHERE shipping_date IS NOT NULL
+GROUP BY DATEPART(YEAR, order_date)
+ORDER BY yr;
+
+D11. ORDERS LATE vs ON TIME COUNT
+SELECT
+  SUM(CASE WHEN shipping_date > due_date THEN 1 ELSE 0 END) AS late_orders,
+  SUM(CASE WHEN shipping_date <= due_date THEN 1 ELSE 0 END) AS on_time_orders,
+  COUNT(*) AS total_orders,
+  ROUND(CAST(SUM(CASE WHEN shipping_date > due_date THEN 1 ELSE 0 END) AS FLOAT)
+    / NULLIF(COUNT(*), 0) * 100, 2) AS late_pct
+FROM [gold].[fact_sales]
+WHERE shipping_date IS NOT NULL;
+
+D12. CUSTOMER AGE FROM BIRTHDATE
+SELECT first_name + ' ' + last_name AS customer,
+  birthdate,
+  DATEDIFF(YEAR, birthdate, GETDATE()) AS age,
+  CASE
+    WHEN DATEDIFF(YEAR, birthdate, GETDATE()) < 30 THEN 'Under 30'
+    WHEN DATEDIFF(YEAR, birthdate, GETDATE()) BETWEEN 30 AND 45 THEN '30-45'
+    WHEN DATEDIFF(YEAR, birthdate, GETDATE()) BETWEEN 46 AND 60 THEN '46-60'
+    ELSE 'Over 60'
+  END AS age_group
+FROM [gold].[dim_customers]
+WHERE birthdate IS NOT NULL
+ORDER BY age;
+
+D13. SALES BY CUSTOMER AGE GROUP
+SELECT
+  CASE
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) < 30 THEN 'Under 30'
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) BETWEEN 30 AND 45 THEN '30-45'
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) BETWEEN 46 AND 60 THEN '46-60'
+    ELSE 'Over 60'
+  END AS age_group,
+  COUNT(DISTINCT f.order_number) AS total_orders,
+  SUM(f.sales_amount) AS total_sales
+FROM [gold].[fact_sales] f
+JOIN [gold].[dim_customers] c ON f.customer_key = c.customer_key
+WHERE c.birthdate IS NOT NULL
+GROUP BY
+  CASE
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) < 30 THEN 'Under 30'
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) BETWEEN 30 AND 45 THEN '30-45'
+    WHEN DATEDIFF(YEAR, c.birthdate, GETDATE()) BETWEEN 46 AND 60 THEN '46-60'
+    ELSE 'Over 60'
+  END
+ORDER BY total_sales DESC;
+
+D14. HOW LONG AGO LAST ORDER (recency)
+SELECT c.first_name + ' ' + c.last_name AS customer,
+  MAX(f.order_date) AS last_order_date,
+  DATEDIFF(DAY, MAX(f.order_date), (SELECT MAX(order_date) FROM [gold].[fact_sales])) AS days_since_last_order
+FROM [gold].[fact_sales] f
+JOIN [gold].[dim_customers] c ON f.customer_key = c.customer_key
+GROUP BY c.first_name, c.last_name
+ORDER BY days_since_last_order DESC;
+
+D15. MONTHLY TREND WITH MONTH NAME
+SELECT DATEPART(YEAR, order_date) AS yr,
+  DATEPART(MONTH, order_date) AS mo_num,
+  DATENAME(MONTH, order_date) AS month_name,
+  SUM(sales_amount) AS total_sales
+FROM [gold].[fact_sales]
+GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date), DATENAME(MONTH, order_date)
+ORDER BY yr, mo_num;
 """
 
 _REPAIR_PROMPT = """The following T-SQL query failed with an error. Fix it.
