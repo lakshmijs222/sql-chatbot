@@ -260,32 +260,66 @@ def safe_str(val) -> str:
     return html.escape(str(val))      # escape HTML special chars
 
 
+_YEAR_COL_PATTERNS = ("year", "yr", "month", "mo", "quarter", "qtr", "rank", "age", "day")
+_PCT_COL_PATTERNS  = ("pct", "percent", "growth", "rate", "ratio", "change")
+
+
+def _is_year_col(col_name: str) -> bool:
+    return any(p in col_name.lower() for p in _YEAR_COL_PATTERNS)
+
+
+def _is_pct_col(col_name: str) -> bool:
+    return any(p in col_name.lower() for p in _PCT_COL_PATTERNS)
+
+
 def _is_whole_number_col(series: pd.Series) -> bool:
-    """True if every non-null float value is actually a whole number."""
     non_null = series.dropna()
     if len(non_null) == 0:
         return True
-    return (non_null == non_null.apply(lambda x: round(x))).all()
+    return bool((non_null % 1 == 0).all())
+
+
+def _fmt_int(x):
+    return f"{int(x):,}" if pd.notna(x) else "—"
+
+
+def _fmt_year(x):
+    """Year/rank/month numbers — no comma, no decimal."""
+    return str(int(x)) if pd.notna(x) else "—"
+
+
+def _fmt_pct(x):
+    """Percentage values — always 2 decimals with % sign."""
+    return f"{x:,.2f}%" if pd.notna(x) else "—"
+
+
+def _fmt_float(x):
+    return f"{x:,.2f}" if pd.notna(x) else "—"
 
 
 def format_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a display-safe copy with all values formatted correctly."""
+    """Return a display-safe copy with smart column-aware formatting."""
     display = df.copy()
     for col in display.columns:
+        col_lower = col.lower()
+
         if pd.api.types.is_integer_dtype(display[col]):
-            display[col] = display[col].apply(
-                lambda x: f"{int(x):,}" if pd.notna(x) else "—"
-            )
-        elif pd.api.types.is_float_dtype(display[col]):
-            # If all values are whole numbers (e.g. 2010.0, 4992.0) → show as int
-            if _is_whole_number_col(display[col]):
-                display[col] = display[col].apply(
-                    lambda x: f"{int(x):,}" if pd.notna(x) else "—"
-                )
+            if _is_year_col(col_lower):
+                display[col] = display[col].apply(_fmt_year)
             else:
-                display[col] = display[col].apply(
-                    lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
-                )
+                display[col] = display[col].apply(_fmt_int)
+
+        elif pd.api.types.is_float_dtype(display[col]):
+            if _is_pct_col(col_lower):
+                # Always show as decimal% — never treat as whole number
+                display[col] = display[col].apply(_fmt_pct)
+            elif _is_year_col(col_lower):
+                display[col] = display[col].apply(_fmt_year)
+            elif _is_whole_number_col(display[col]):
+                display[col] = display[col].apply(_fmt_int)
+            else:
+                display[col] = display[col].apply(_fmt_float)
+
         elif pd.api.types.is_datetime64_any_dtype(display[col]):
             display[col] = display[col].apply(
                 lambda x: str(x.date()) if pd.notna(x) else "—"
