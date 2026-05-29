@@ -5,7 +5,8 @@ import html
 import markdown as md_lib
 from datetime import datetime
 from database import get_schema, run_query
-from claude_agent import generate_sql, repair_sql, explain_results
+from claude_agent import generate_sql, repair_sql, explain_results, is_report_request, plan_report_sections, get_report_title
+from report_generator import generate_report
 from auth import require_auth
 from logger import log_query
 import cache as query_cache
@@ -354,6 +355,11 @@ for i, msg in enumerate(st.session_state.messages):
         if msg.get("from_cache"):
             st.markdown('<span class="cache-badge">⚡ Cached result</span>', unsafe_allow_html=True)
         render_ai_bubble(msg["content"])
+        if "report_bytes" in msg:
+            st.download_button(label="📄 Download Report (.docx)", data=msg["report_bytes"],
+                               file_name=msg.get("report_filename", "report.docx"),
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                               key=f"report_hist_{i}")
         if "dataframe" in msg:
             render_table(msg["dataframe"], key=f"hist_{i}")
         if "sql" in msg:
@@ -372,57 +378,95 @@ if question:
     render_user_bubble(question)
     st.session_state.total_queries += 1
 
-    with st.spinner("🤖 Analyzing your question..."):
+    with st.spinner("Analyzing your question..."):
         sql = ""
         df = pd.DataFrame()
         error_msg = None
 
         try:
-            # 1. Check cache
-            cached_sql, cached_df = query_cache.get(question, schema_hash)
-            from_cache = cached_sql is not None
+            # ── REPORT REQUEST ─────────────────────────────────────────────────
+            if is_report_request(question):
+                sections_plan = plan_report_sections(question)
+                report_title  = get_report_title(question)
+                sections      = []
+                summary_stats = {}
+                total         = len(sections_plan)
+                progress      = st.progress(0, text="Building report...")
 
-            if from_cache:
-                sql, df = cached_sql, cached_df
-                st.session_state.cache_hits += 1
+                for idx, sec in enumerate(sections_plan):
+                    progress.progress(idx / total, text=f"Section {idx+1}/{total}: {sec['heading']}...")
+                    try:
+                        sec_sql = generate_sql(sec["question"], schema)
+                        try:
+                            sec_df = run_query(sec_sql)
+                        except Exception as db_err:
+                            sec_sql = repair_sql(sec_sql, str(db_err), schema)
+                            sec_df  = run_query(sec_sql)
+                        sec_explanation = explain_results(sec["question"], sec_sql, sec_df)
+                        log_query(username, sec["question"], sec_sql, len(sec_df))
+                        sections.append({"heading": sec["heading"], "explanation": sec_explanation,
+                                         "df": sec_df if not sec_df.empty else None, "sql": sec_sql})
+                        if idx == 0 and not sec_df.empty:
+                            for col in sec_df.select_dtypes(include="number").columns[:4]:
+                                val = sec_df[col].sum()
+                                label = col.replace("_", " ").title()
+                                summary_stats[label] = f"{int(val):,}" if pd.api.types.is_integer_dtype(sec_df[col]) else f"{val:,.0f}"
+                    except Exception as sec_err:
+                        sections.append({"heading": sec["heading"],
+                                         "explanation": f"Could not generate this section: {sec_err}",
+                                         "df": None, "sql": ""})
+
+                progress.progress(1.0, text="Finalising...")
+                doc_bytes = generate_report(title=report_title, sections=sections,
+                                            summary_stats=summary_stats, username=username)
+                progress.empty()
+
+                reply = f"Your **{report_title}** is ready with **{len(sections)} sections**."
+                render_ai_bubble(reply)
+                fn = report_title.replace(" ", "_")[:40] + f"_{ts}.docx"
+                st.download_button(label="📄 Download Report (.docx)", data=doc_bytes,
+                                   file_name=fn, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                   key=f"report_{ts}")
+                st.session_state.messages.append({"role": "assistant", "content": reply,
+                                                   "report_bytes": doc_bytes, "report_filename": fn, "ts": ts})
+
+            # ── NORMAL QUESTION ────────────────────────────────────────────────
             else:
-                # 2. Generate SQL
-                sql = generate_sql(question, schema)
+                cached_sql, cached_df = query_cache.get(question, schema_hash)
+                from_cache = cached_sql is not None
 
-                # 3. Run query — auto-repair once on failure
-                try:
-                    df = run_query(sql)
-                except Exception as db_err:
-                    repaired = repair_sql(sql, str(db_err), schema)
-                    if repaired != sql:
-                        sql = repaired
-                        df = run_query(sql)   # if this fails again, raises naturally
-                    else:
-                        raise
+                if from_cache:
+                    sql, df = cached_sql, cached_df
+                    st.session_state.cache_hits += 1
+                else:
+                    sql = generate_sql(question, schema)
+                    try:
+                        df = run_query(sql)
+                    except Exception as db_err:
+                        repaired = repair_sql(sql, str(db_err), schema)
+                        if repaired != sql:
+                            sql = repaired
+                            df  = run_query(sql)
+                        else:
+                            raise
+                    query_cache.set(question, schema_hash, sql, df)
 
-                query_cache.set(question, schema_hash, sql, df)
+                explanation = explain_results(question, sql, df)
 
-            # 4. Explain
-            explanation = explain_results(question, sql, df)
+                if from_cache:
+                    st.markdown('<span class="cache-badge">⚡ Cached result</span>', unsafe_allow_html=True)
 
-            # 5. Render
-            if from_cache:
-                st.markdown('<span class="cache-badge">⚡ Cached result</span>', unsafe_allow_html=True)
+                render_ai_bubble(explanation)
+                if not df.empty:
+                    render_table(df, key=f"new_{ts}")
+                with st.expander("🔍 View SQL Query"):
+                    st.code(sql, language="sql")
 
-            render_ai_bubble(explanation)
-
-            if not df.empty:
-                render_table(df, key=f"new_{ts}")
-
-            with st.expander("🔍 View SQL Query"):
-                st.code(sql, language="sql")
-
-            log_query(username, question, sql, len(df))
-
-            saved = {"role": "assistant", "content": explanation, "sql": sql, "ts": ts, "from_cache": from_cache}
-            if not df.empty:
-                saved["dataframe"] = df
-            st.session_state.messages.append(saved)
+                log_query(username, question, sql, len(df))
+                saved = {"role": "assistant", "content": explanation, "sql": sql, "ts": ts, "from_cache": from_cache}
+                if not df.empty:
+                    saved["dataframe"] = df
+                st.session_state.messages.append(saved)
 
         except ValueError as ve:
             error_msg = str(ve)
