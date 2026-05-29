@@ -27,9 +27,9 @@ def login_page():
     .login-sub { text-align:center; font-size:0.85rem; color:#718096; margin-bottom:28px; }
     </style>
     <div class="login-wrap">
-        <div class="login-logo">📊</div>
-        <div class="login-title">DataWarehouse Chatbot</div>
-        <div class="login-sub">Sign in to access your analytics assistant</div>
+        <div class="login-logo">🔍</div>
+        <div class="login-title">InsightIQ</div>
+        <div class="login-sub">Ask your data, get instant answers</div>
     </div>
     """, unsafe_allow_html=True)
 

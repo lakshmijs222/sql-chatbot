@@ -10,8 +10,8 @@ from logger import log_query
 import cache as query_cache
 
 st.set_page_config(
-    page_title="DataWarehouse Analytics Chatbot",
-    page_icon="📊",
+    page_title="InsightIQ",
+    page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -138,7 +138,7 @@ if "cache_hits" not in st.session_state:
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(f"## 📊 Analytics Assistant")
+    st.markdown(f"## 🔍 InsightIQ")
     st.markdown(f"<div style='font-size:0.78rem;color:#718096;margin-bottom:12px'>Signed in as <b style='color:#90cdf4'>{username}</b></div>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -192,14 +192,14 @@ with st.sidebar:
 # ── Hero ───────────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="hero-banner">
-    <div class="hero-title">📊 DataWarehouse Analytics Chatbot</div>
-    <div class="hero-sub">Ask any business question in plain English — get instant insights from your data warehouse</div>
+    <div class="hero-title">🔍 InsightIQ</div>
+    <div class="hero-sub">Ask your data, get instant answers — no SQL knowledge needed</div>
     <div class="hero-badges">
         <span class="badge">🤖 Claude AI</span>
         <span class="badge">🗄️ SQL Server</span>
         <span class="badge">⚡ Real-time</span>
         <span class="badge">💬 Natural Language</span>
-        <span class="badge">📊 Auto Charts</span>
+        <span class="badge">📊 Smart Tables</span>
     </div>
 </div>
 """, unsafe_allow_html=True)

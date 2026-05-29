@@ -22,6 +22,6 @@ ADMIN_PASSWORD_HASH = os.getenv("ADMIN_PASSWORD_HASH", "")
 ADMIN_PASSWORD_PLAIN = os.getenv("ADMIN_PASSWORD", "admin123")
 
 # App
-APP_TITLE = "DataWarehouse Analytics Chatbot"
+APP_TITLE = "InsightIQ"
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
