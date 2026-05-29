@@ -260,8 +260,16 @@ def safe_str(val) -> str:
     return html.escape(str(val))      # escape HTML special chars
 
 
+def _is_whole_number_col(series: pd.Series) -> bool:
+    """True if every non-null float value is actually a whole number."""
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return True
+    return (non_null == non_null.apply(lambda x: round(x))).all()
+
+
 def format_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a display-safe copy with all values converted to strings."""
+    """Return a display-safe copy with all values formatted correctly."""
     display = df.copy()
     for col in display.columns:
         if pd.api.types.is_integer_dtype(display[col]):
@@ -269,9 +277,15 @@ def format_df(df: pd.DataFrame) -> pd.DataFrame:
                 lambda x: f"{int(x):,}" if pd.notna(x) else "—"
             )
         elif pd.api.types.is_float_dtype(display[col]):
-            display[col] = display[col].apply(
-                lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
-            )
+            # If all values are whole numbers (e.g. 2010.0, 4992.0) → show as int
+            if _is_whole_number_col(display[col]):
+                display[col] = display[col].apply(
+                    lambda x: f"{int(x):,}" if pd.notna(x) else "—"
+                )
+            else:
+                display[col] = display[col].apply(
+                    lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
+                )
         elif pd.api.types.is_datetime64_any_dtype(display[col]):
             display[col] = display[col].apply(
                 lambda x: str(x.date()) if pd.notna(x) else "—"
