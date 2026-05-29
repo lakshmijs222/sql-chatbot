@@ -25,7 +25,10 @@ GENERAL SQL RULES:
 - Fully qualified names: [gold].[dim_customers], [gold].[dim_products], [gold].[fact_sales]
 - Joins: fact_sales → dim_customers ON customer_key | fact_sales → dim_products ON product_key
 - Use DATEPART(YEAR, col) / DATEPART(MONTH, col) — never YEAR() or MONTH()
-- Use CAST(col AS FLOAT) for all division to avoid integer truncation
+- ALWAYS wrap DATEPART results with CAST(...AS INT) — e.g. CAST(DATEPART(YEAR, order_date) AS INT)
+- ALWAYS wrap SUM(sales_amount) with CAST(...AS BIGINT) to avoid float display
+- ALWAYS wrap LAG() on integer columns with CAST(...AS BIGINT)
+- Use CAST(col AS FLOAT) only for division — never leave raw DATEPART as the return type
 - Use NULLIF(denominator, 0) to prevent divide-by-zero errors
 - Use CTEs (WITH ...) for multi-step calculations
 - Use clear aliases: total_sales, growth_pct, rank_num, running_total, pct_of_total etc.
@@ -36,27 +39,42 @@ ANALYTICS OPERATION REFERENCE
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. YEAR-OVER-YEAR GROWTH (%)
+-- CRITICAL: always CAST year to INT and amounts to BIGINT to avoid float display
 WITH yr AS (
-  SELECT DATEPART(YEAR, order_date) AS yr, SUM(sales_amount) AS total
-  FROM [gold].[fact_sales] GROUP BY DATEPART(YEAR, order_date)
+  SELECT
+    CAST(DATEPART(YEAR, order_date) AS INT) AS order_year,
+    CAST(SUM(sales_amount) AS BIGINT)       AS total_sales
+  FROM [gold].[fact_sales]
+  GROUP BY DATEPART(YEAR, order_date)
 )
-SELECT yr, total,
-  LAG(total) OVER (ORDER BY yr) AS prev_year,
-  ROUND(CAST(total - LAG(total) OVER (ORDER BY yr) AS FLOAT)
-    / NULLIF(LAG(total) OVER (ORDER BY yr), 0) * 100, 2) AS yoy_growth_pct
-FROM yr ORDER BY yr;
+SELECT
+  order_year,
+  total_sales,
+  CAST(LAG(total_sales) OVER (ORDER BY order_year) AS BIGINT) AS prev_year_sales,
+  ROUND(
+    CAST(total_sales - LAG(total_sales) OVER (ORDER BY order_year) AS FLOAT)
+    / NULLIF(CAST(LAG(total_sales) OVER (ORDER BY order_year) AS FLOAT), 0) * 100
+  , 2) AS yoy_growth_pct
+FROM yr
+ORDER BY order_year;
 
 2. MONTH-OVER-MONTH GROWTH (%)
 WITH mo AS (
-  SELECT DATEPART(YEAR, order_date) AS yr, DATEPART(MONTH, order_date) AS mo,
-    SUM(sales_amount) AS total
-  FROM [gold].[fact_sales] GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date)
+  SELECT
+    CAST(DATEPART(YEAR,  order_date) AS INT) AS order_year,
+    CAST(DATEPART(MONTH, order_date) AS INT) AS order_month,
+    CAST(SUM(sales_amount) AS BIGINT)        AS total_sales
+  FROM [gold].[fact_sales]
+  GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date)
 )
-SELECT yr, mo, total,
-  LAG(total) OVER (ORDER BY yr, mo) AS prev_month,
-  ROUND(CAST(total - LAG(total) OVER (ORDER BY yr, mo) AS FLOAT)
-    / NULLIF(LAG(total) OVER (ORDER BY yr, mo), 0) * 100, 2) AS mom_growth_pct
-FROM mo ORDER BY yr, mo;
+SELECT
+  order_year, order_month, total_sales,
+  CAST(LAG(total_sales) OVER (ORDER BY order_year, order_month) AS BIGINT) AS prev_month_sales,
+  ROUND(
+    CAST(total_sales - LAG(total_sales) OVER (ORDER BY order_year, order_month) AS FLOAT)
+    / NULLIF(CAST(LAG(total_sales) OVER (ORDER BY order_year, order_month) AS FLOAT), 0) * 100
+  , 2) AS mom_growth_pct
+FROM mo ORDER BY order_year, order_month;
 
 3. RUNNING TOTAL / CUMULATIVE SUM
 SELECT order_date, sales_amount,
@@ -157,28 +175,34 @@ IMPORTANT DATE RULES:
 - For "this year" / "last year" — derive from MAX(order_date), not GETDATE()
 
 D1. SALES BY YEAR
-SELECT DATEPART(YEAR, order_date) AS order_year,
-  COUNT(DISTINCT order_number) AS total_orders,
-  SUM(sales_amount) AS total_sales
+SELECT
+  CAST(DATEPART(YEAR, order_date) AS INT) AS order_year,
+  COUNT(DISTINCT order_number)            AS total_orders,
+  CAST(SUM(sales_amount) AS BIGINT)       AS total_sales
 FROM [gold].[fact_sales]
 GROUP BY DATEPART(YEAR, order_date)
 ORDER BY order_year;
 
 D2. SALES BY MONTH (specific year)
-SELECT DATEPART(YEAR, order_date) AS yr, DATEPART(MONTH, order_date) AS mo,
-  SUM(sales_amount) AS total_sales, COUNT(DISTINCT order_number) AS orders
+SELECT
+  CAST(DATEPART(YEAR,  order_date) AS INT) AS order_year,
+  CAST(DATEPART(MONTH, order_date) AS INT) AS order_month,
+  DATENAME(MONTH, order_date)              AS month_name,
+  CAST(SUM(sales_amount) AS BIGINT)        AS total_sales,
+  COUNT(DISTINCT order_number)             AS total_orders
 FROM [gold].[fact_sales]
 WHERE DATEPART(YEAR, order_date) = 2013
-GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date)
-ORDER BY yr, mo;
+GROUP BY DATEPART(YEAR, order_date), DATEPART(MONTH, order_date), DATENAME(MONTH, order_date)
+ORDER BY order_year, order_month;
 
 D3. SALES BY QUARTER
-SELECT DATEPART(YEAR, order_date) AS yr,
-  DATEPART(QUARTER, order_date) AS quarter,
-  SUM(sales_amount) AS total_sales
+SELECT
+  CAST(DATEPART(YEAR,    order_date) AS INT) AS order_year,
+  CAST(DATEPART(QUARTER, order_date) AS INT) AS quarter,
+  CAST(SUM(sales_amount) AS BIGINT)          AS total_sales
 FROM [gold].[fact_sales]
 GROUP BY DATEPART(YEAR, order_date), DATEPART(QUARTER, order_date)
-ORDER BY yr, quarter;
+ORDER BY order_year, quarter;
 
 D4. SALES BY DAY OF WEEK
 SELECT DATENAME(WEEKDAY, order_date) AS day_name,
