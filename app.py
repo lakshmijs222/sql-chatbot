@@ -4,7 +4,7 @@ import hashlib
 import html
 import markdown as md_lib
 from datetime import datetime
-from database import get_schema, run_query, list_tables
+from database import get_schema, run_query, list_tables, list_databases
 from config import DB_NAME
 from claude_agent import (generate_sql, repair_sql, explain_results, is_report_request,
                           is_ppt_request, plan_report_sections, get_report_title)
@@ -193,23 +193,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ── Schema ─────────────────────────────────────────────────────────────────────
+# ── Database selection (dynamic, switchable in the sidebar) ─────────────────────
 @st.cache_resource
-def load_schema():
-    return get_schema()
+def load_databases():
+    try:
+        return list_databases()
+    except Exception:
+        return [DB_NAME]
+
+# Active database for this session (auto-detect schemas so any DB works)
+if "active_db" not in st.session_state:
+    st.session_state["active_db"] = DB_NAME
+
+active_db = st.session_state["active_db"]
 
 @st.cache_resource
-def load_tables():
-    return list_tables()
+def load_schema(db_name):
+    # schemas="" → auto-detect all user schemas in the chosen database
+    return get_schema(db_name, schemas="")
+
+@st.cache_resource
+def load_tables(db_name):
+    return list_tables(db_name, schemas="")
 
 try:
-    schema = load_schema()
+    schema = load_schema(active_db)
     schema_hash = hashlib.md5(schema.encode()).hexdigest()
-    tables = load_tables()
+    tables = load_tables(active_db)
     table_count = len(tables)
     column_count = schema.count("    - ")   # each column line is indented with "- "
 except Exception as e:
-    st.error("Could not connect to the database. Please check your DB_SERVER and DB_NAME settings.")
+    st.error(f"Could not connect to '{active_db}'. Please check the database and server settings.")
     st.stop()
 
 # ── Session defaults ───────────────────────────────────────────────────────────
@@ -229,10 +243,29 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<div class="status-pill">🟢 &nbsp; Database Connected</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-section">Data Source</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="table-pill">🗄️ &nbsp; {html.escape(DB_NAME)}</div>', unsafe_allow_html=True)
+
+    # ── Database switcher ──────────────────────────────────────────────────────
+    all_dbs = load_databases()
+    if active_db not in all_dbs:
+        all_dbs = [active_db] + all_dbs
+    chosen_db = st.selectbox(
+        "Database",
+        options=all_dbs,
+        index=all_dbs.index(active_db),
+        label_visibility="collapsed",
+    )
+    if chosen_db != active_db:
+        # Switch: reset session and reload against the new database
+        st.session_state["active_db"] = chosen_db
+        st.session_state.messages = []
+        st.session_state.total_queries = 0
+        st.session_state.cache_hits = 0
+        st.cache_resource.clear()
+        st.rerun()
+
     st.markdown(
         f'<div style="font-size:0.72rem;color:#7c8aa5;margin-top:6px;padding-left:2px">'
-        f'Connected to your business data — just ask a question in plain English.</div>',
+        f'Connected — switch databases anytime from the dropdown above.</div>',
         unsafe_allow_html=True,
     )
     st.markdown("---")
@@ -506,10 +539,10 @@ if question:
                 try:
                     sec_sql = generate_sql(sec["question"], schema)
                     try:
-                        sec_df = run_query(sec_sql)
+                        sec_df = run_query(sec_sql, active_db)
                     except Exception as db_err:
                         sec_sql = repair_sql(sec_sql, str(db_err), schema)
-                        sec_df  = run_query(sec_sql)
+                        sec_df  = run_query(sec_sql, active_db)
                     sec_explanation = explain_results(sec["question"], sec_sql, sec_df)
                     log_query(username, sec["question"], sec_sql, len(sec_df))
                     secs.append({"heading": sec["heading"], "explanation": sec_explanation,
@@ -580,12 +613,12 @@ if question:
                 else:
                     sql = generate_sql(question, schema)
                     try:
-                        df = run_query(sql)
+                        df = run_query(sql, active_db)
                     except Exception as db_err:
                         repaired = repair_sql(sql, str(db_err), schema)
                         if repaired != sql:
                             sql = repaired
-                            df  = run_query(sql)
+                            df  = run_query(sql, active_db)
                         else:
                             raise
                     query_cache.set(question, schema_hash, sql, df)

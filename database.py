@@ -9,39 +9,57 @@ from config import (DB_SERVER, DB_NAME, DB_POOL_SIZE, DB_QUERY_TIMEOUT, DB_MAX_R
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
-_CONNECTION_STRING = (
-    f"mssql+pyodbc://@{DB_SERVER}/{DB_NAME}"
-    "?driver=ODBC+Driver+17+for+SQL+Server"
-    "&trusted_connection=yes"
-)
-
 _FORBIDDEN = ("DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "TRUNCATE", "EXEC", "EXECUTE", "GRANT", "REVOKE")
 
+# System databases never shown in the switcher
+_SYSTEM_DBS = ("master", "tempdb", "model", "msdb")
 
-def _make_engine():
+
+def _conn_string(db_name: str) -> str:
+    return (
+        f"mssql+pyodbc://@{DB_SERVER}/{db_name}"
+        "?driver=ODBC+Driver+17+for+SQL+Server"
+        "&trusted_connection=yes"
+    )
+
+
+def _make_engine(db_name: str):
     return create_engine(
-        _CONNECTION_STRING,
+        _conn_string(db_name),
         poolclass=QueuePool,
         pool_size=DB_POOL_SIZE,
         max_overflow=2,
-        pool_pre_ping=True,         # auto-reconnect on stale connections
+        pool_pre_ping=True,
         connect_args={"timeout": DB_QUERY_TIMEOUT},
     )
 
 
-_engine = None
+# Cache one engine per database name
+_engines = {}
 
 
-def get_engine():
-    global _engine
-    if _engine is None:
-        _engine = _make_engine()
-    return _engine
+def get_engine(db_name: str = None):
+    name = db_name or DB_NAME
+    if name not in _engines:
+        _engines[name] = _make_engine(name)
+    return _engines[name]
 
 
-def _schema_filter_clause():
-    """Build the WHERE clause + params to restrict to the configured schemas."""
-    configured = [s.strip() for s in DB_SCHEMAS.split(",") if s.strip()]
+def list_databases() -> list:
+    """List user databases available on the server (excludes system DBs)."""
+    engine = get_engine("master")
+    with engine.connect() as conn:
+        rows = conn.execute(text(
+            "SELECT name FROM sys.databases WHERE state = 0 ORDER BY name"
+        )).fetchall()
+    return [r[0] for r in rows if r[0].lower() not in _SYSTEM_DBS]
+
+
+def _schema_filter_clause(schemas: str = None):
+    """Build the WHERE clause + params to restrict to the chosen schemas.
+    If `schemas` is None, fall back to configured DB_SCHEMAS."""
+    raw = DB_SCHEMAS if schemas is None else schemas
+    configured = [s.strip() for s in raw.split(",") if s.strip()]
     if configured:
         placeholders = ", ".join(f":s{i}" for i in range(len(configured)))
         clause = f"t.TABLE_SCHEMA IN ({placeholders})"
@@ -54,23 +72,23 @@ def _schema_filter_clause():
     return clause, params
 
 
-def list_tables() -> list:
+def list_tables(db_name: str = None, schemas: str = None) -> list:
     """Return a list of 'schema.table' names exposed to the chatbot."""
-    clause, params = _schema_filter_clause()
+    clause, params = _schema_filter_clause(schemas)
     query = text(f"""
         SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME
         FROM INFORMATION_SCHEMA.TABLES t
         WHERE TABLE_TYPE = 'BASE TABLE' AND {clause}
         ORDER BY TABLE_SCHEMA, TABLE_NAME
     """)
-    engine = get_engine()
+    engine = get_engine(db_name)
     with engine.connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [f"{r[0]}.{r[1]}" for r in rows if r[1] not in SYSTEM_TABLES]
 
 
-def get_schema() -> str:
-    clause, params = _schema_filter_clause()
+def get_schema(db_name: str = None, schemas: str = None) -> str:
+    clause, params = _schema_filter_clause(schemas)
     query = text(f"""
         SELECT t.TABLE_SCHEMA, t.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE
         FROM INFORMATION_SCHEMA.TABLES t
@@ -79,11 +97,11 @@ def get_schema() -> str:
         WHERE t.TABLE_TYPE = 'BASE TABLE' AND {clause}
         ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
     """)
-    engine = get_engine()
+    engine = get_engine(db_name)
     with engine.connect() as conn:
         rows = conn.execute(query, params).fetchall()
 
-    schema_text = f"Database: {DB_NAME}\n\nTables:\n"
+    schema_text = f"Database: {db_name or DB_NAME}\n\nTables:\n"
     current_table = None
     for row in rows:
         if row[1] in SYSTEM_TABLES:
@@ -95,11 +113,11 @@ def get_schema() -> str:
         nullable = "NULL" if row[4] == "YES" else "NOT NULL"
         schema_text += f"    - {row[2]} ({row[3]}, {nullable})\n"
 
-    logger.info("Schema loaded: %d tables", schema_text.count("Table:"))
+    logger.info("Schema loaded: %d tables from %s", schema_text.count("Table:"), db_name or DB_NAME)
     return schema_text
 
 
-def run_query(sql: str) -> pd.DataFrame:
+def run_query(sql: str, db_name: str = None) -> pd.DataFrame:
     sql = sql.strip()
     upper = sql.upper().lstrip()
 
@@ -114,7 +132,7 @@ def run_query(sql: str) -> pd.DataFrame:
     if not upper.startswith(allowed_starts):
         raise ValueError("Only read-only queries (SELECT) are allowed.")
 
-    engine = get_engine()
+    engine = get_engine(db_name)
     with engine.connect() as conn:
         df = pd.read_sql(text(sql), conn)
 
