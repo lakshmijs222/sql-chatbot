@@ -283,11 +283,6 @@ with st.sidebar:
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
-    st.markdown(
-        '<div style="font-size:0.7rem;color:#4a5568;text-align:center;margin-top:10px">'
-        'Powered by Claude AI · SQL Server</div>',
-        unsafe_allow_html=True,
-    )
 
 
 # ── Hero ───────────────────────────────────────────────────────────────────────
