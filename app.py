@@ -260,7 +260,7 @@ with st.sidebar:
 # ── Hero ───────────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="hero-banner">
-    <div class="hero-title">🔍 InsightIQ</div>
+    <div class="hero-title">🔍 InsightIQ <span style="font-size:1.1rem;font-weight:600;color:#dbeafe;">– AI-Powered Business Intelligence Assistant</span></div>
     <div class="hero-sub">Ask your data, get instant answers — no SQL knowledge needed</div>
     <div class="hero-badges">
         <span class="badge">🤖 Claude AI</span>
