@@ -102,12 +102,17 @@ def get_schema() -> str:
 def run_query(sql: str) -> pd.DataFrame:
     sql = sql.strip()
     upper = sql.upper().lstrip()
+
+    # Block destructive operations anywhere in the statement
     for keyword in _FORBIDDEN:
         if upper.startswith(keyword) or f" {keyword} " in upper:
-            raise ValueError(f"Blocked operation: {keyword}. Only SELECT queries are allowed.")
+            raise ValueError(f"Blocked operation: {keyword}. Only read-only queries are allowed.")
 
-    if not upper.startswith("SELECT"):
-        raise ValueError("Query must start with SELECT.")
+    # Allow read-only query forms: plain SELECT, CTEs (WITH), and
+    # variable declarations used by date-relative analytics (DECLARE ... SELECT)
+    allowed_starts = ("SELECT", "WITH", "DECLARE")
+    if not upper.startswith(allowed_starts):
+        raise ValueError("Only read-only queries (SELECT) are allowed.")
 
     engine = get_engine()
     with engine.connect() as conn:

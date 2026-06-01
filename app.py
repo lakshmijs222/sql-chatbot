@@ -239,17 +239,38 @@ with st.sidebar:
     c1.metric("Queries", st.session_state.total_queries)
     c2.metric("Cache Hits", st.session_state.cache_hits)
     st.markdown("---")
-    st.markdown('<div class="sidebar-section">Try asking</div>', unsafe_allow_html=True)
-    for icon, text in [
-        ("💰","Top 10 customers by total sales"),
-        ("📦","Best-selling products by revenue"),
-        ("📅","Monthly sales trend"),
-        ("🎨","Sales by product category"),
-        ("⚡","Average order value by category"),
-        ("📈","Year over year sales growth"),
-    ]:
-        if st.button(f"{icon} {text}", key=text):
-            st.session_state["prefill"] = text
+    # ── Business KPI quick-questions, grouped by area ──────────────────────────
+    kpi_groups = {
+        "📊 Revenue & Sales": [
+            ("💰", "What is our total revenue?"),
+            ("📈", "Show year over year sales growth"),
+            ("📅", "Monthly sales trend with growth %"),
+            ("🧾", "What is the average order value?"),
+        ],
+        "🛍️ Products": [
+            ("🏆", "Top 10 best-selling products by revenue"),
+            ("🎨", "Total sales by product category"),
+            ("💵", "Which products have the highest profit margin?"),
+            ("📉", "Which products have never been ordered?"),
+        ],
+        "👥 Customers": [
+            ("⭐", "Top 10 customers by total amount spent"),
+            ("🔁", "Which customers placed more than one order?"),
+            ("🏢", "Top companies by total purchases"),
+            ("🌍", "Sales breakdown by customer city"),
+        ],
+        "🚚 Orders & Operations": [
+            ("📦", "How many orders do we have per month?"),
+            ("💲", "Total tax and freight collected by year"),
+            ("⏱️", "Average days between order date and ship date"),
+            ("🛒", "Average number of items per order"),
+        ],
+    }
+    for group, items in kpi_groups.items():
+        st.markdown(f'<div class="sidebar-section">{group}</div>', unsafe_allow_html=True)
+        for icon, text in items:
+            if st.button(f"{icon} {text}", key=text):
+                st.session_state["prefill"] = text
     st.markdown("---")
     if st.button("🗑️ Clear Chat", use_container_width=True):
         st.session_state.messages = []
