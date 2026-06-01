@@ -204,6 +204,8 @@ try:
     schema = load_schema()
     schema_hash = hashlib.md5(schema.encode()).hexdigest()
     tables = load_tables()
+    table_count = len(tables)
+    column_count = schema.count("    - ")   # each column line is indented with "- "
 except Exception as e:
     st.error("Could not connect to the database. Please check your DB_SERVER and DB_NAME settings.")
     st.stop()
@@ -226,9 +228,11 @@ with st.sidebar:
     st.markdown('<div class="status-pill">🟢 &nbsp; Database Connected</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-section">Data Source</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="table-pill">🗄️ &nbsp; {html.escape(DB_NAME)}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="sidebar-section">Available Tables ({len(tables)})</div>', unsafe_allow_html=True)
-    for table in tables:
-        st.markdown(f'<div class="table-pill">📋 &nbsp; {html.escape(table)}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div style="font-size:0.72rem;color:#7c8aa5;margin-top:6px;padding-left:2px">'
+        f'Connected to your business data — just ask a question in plain English.</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
     st.markdown('<div class="sidebar-section">Session Stats</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
@@ -280,8 +284,8 @@ st.markdown(f"""
 
 st.markdown(f"""
 <div class="stats-row">
-    <div class="stat-card c1"><span class="stat-number">3</span><span class="stat-label">Tables</span></div>
-    <div class="stat-card c2"><span class="stat-number">25+</span><span class="stat-label">Columns</span></div>
+    <div class="stat-card c1"><span class="stat-number">{table_count}</span><span class="stat-label">Tables</span></div>
+    <div class="stat-card c2"><span class="stat-number">{column_count}</span><span class="stat-label">Columns</span></div>
     <div class="stat-card c3"><span class="stat-number">{st.session_state.total_queries}</span><span class="stat-label">Queries Run</span></div>
     <div class="stat-card c4"><span class="stat-number">0</span><span class="stat-label">SQL Needed</span></div>
 </div>
