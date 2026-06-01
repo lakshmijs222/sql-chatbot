@@ -4,7 +4,8 @@ from sqlalchemy.pool import QueuePool
 from pathlib import Path
 from dotenv import load_dotenv
 from logger import logger
-from config import DB_SERVER, DB_NAME, DB_POOL_SIZE, DB_QUERY_TIMEOUT, DB_MAX_ROWS
+from config import (DB_SERVER, DB_NAME, DB_POOL_SIZE, DB_QUERY_TIMEOUT, DB_MAX_ROWS,
+                    DB_SCHEMAS, SYSTEM_SCHEMAS, SYSTEM_TABLES)
 
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
@@ -38,22 +39,55 @@ def get_engine():
     return _engine
 
 
+def _schema_filter_clause():
+    """Build the WHERE clause + params to restrict to the configured schemas."""
+    configured = [s.strip() for s in DB_SCHEMAS.split(",") if s.strip()]
+    if configured:
+        placeholders = ", ".join(f":s{i}" for i in range(len(configured)))
+        clause = f"t.TABLE_SCHEMA IN ({placeholders})"
+        params = {f"s{i}": name for i, name in enumerate(configured)}
+    else:
+        # Auto-detect: exclude system schemas
+        placeholders = ", ".join(f":sys{i}" for i in range(len(SYSTEM_SCHEMAS)))
+        clause = f"t.TABLE_SCHEMA NOT IN ({placeholders})"
+        params = {f"sys{i}": name for i, name in enumerate(SYSTEM_SCHEMAS)}
+    return clause, params
+
+
+def list_tables() -> list:
+    """Return a list of 'schema.table' names exposed to the chatbot."""
+    clause, params = _schema_filter_clause()
+    query = text(f"""
+        SELECT DISTINCT TABLE_SCHEMA, TABLE_NAME
+        FROM INFORMATION_SCHEMA.TABLES t
+        WHERE TABLE_TYPE = 'BASE TABLE' AND {clause}
+        ORDER BY TABLE_SCHEMA, TABLE_NAME
+    """)
+    engine = get_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [f"{r[0]}.{r[1]}" for r in rows if r[1] not in SYSTEM_TABLES]
+
+
 def get_schema() -> str:
-    query = """
+    clause, params = _schema_filter_clause()
+    query = text(f"""
         SELECT t.TABLE_SCHEMA, t.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE, c.IS_NULLABLE
         FROM INFORMATION_SCHEMA.TABLES t
         JOIN INFORMATION_SCHEMA.COLUMNS c
             ON t.TABLE_NAME = c.TABLE_NAME AND t.TABLE_SCHEMA = c.TABLE_SCHEMA
-        WHERE t.TABLE_SCHEMA = 'gold'
-        ORDER BY t.TABLE_NAME, c.ORDINAL_POSITION
-    """
+        WHERE t.TABLE_TYPE = 'BASE TABLE' AND {clause}
+        ORDER BY t.TABLE_SCHEMA, t.TABLE_NAME, c.ORDINAL_POSITION
+    """)
     engine = get_engine()
     with engine.connect() as conn:
-        rows = conn.execute(text(query)).fetchall()
+        rows = conn.execute(query, params).fetchall()
 
-    schema_text = "Database: DataWarehouseAnalytics\n\nTables:\n"
+    schema_text = f"Database: {DB_NAME}\n\nTables:\n"
     current_table = None
     for row in rows:
+        if row[1] in SYSTEM_TABLES:
+            continue
         table_full = f"{row[0]}.{row[1]}"
         if table_full != current_table:
             schema_text += f"\nTable: {table_full}\n  Columns:\n"

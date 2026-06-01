@@ -4,7 +4,8 @@ import hashlib
 import html
 import markdown as md_lib
 from datetime import datetime
-from database import get_schema, run_query
+from database import get_schema, run_query, list_tables
+from config import DB_NAME
 from claude_agent import generate_sql, repair_sql, explain_results, is_report_request, plan_report_sections, get_report_title
 from report_generator import generate_report
 from auth import require_auth
@@ -195,9 +196,14 @@ st.markdown("""
 def load_schema():
     return get_schema()
 
+@st.cache_resource
+def load_tables():
+    return list_tables()
+
 try:
     schema = load_schema()
     schema_hash = hashlib.md5(schema.encode()).hexdigest()
+    tables = load_tables()
 except Exception as e:
     st.error("Could not connect to the database. Please check your DB_SERVER and DB_NAME settings.")
     st.stop()
@@ -219,10 +225,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<div class="status-pill">🟢 &nbsp; Database Connected</div>', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-section">Data Source</div>', unsafe_allow_html=True)
-    st.markdown('<div class="table-pill">🗄️ &nbsp; DataWarehouseAnalytics</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-section">Available Tables</div>', unsafe_allow_html=True)
-    for table, icon in [("gold.dim_customers","👥"),("gold.dim_products","📦"),("gold.fact_sales","💰")]:
-        st.markdown(f'<div class="table-pill">{icon} &nbsp; {table}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="table-pill">🗄️ &nbsp; {html.escape(DB_NAME)}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sidebar-section">Available Tables ({len(tables)})</div>', unsafe_allow_html=True)
+    for table in tables:
+        st.markdown(f'<div class="table-pill">📋 &nbsp; {html.escape(table)}</div>', unsafe_allow_html=True)
     st.markdown("---")
     st.markdown('<div class="sidebar-section">Session Stats</div>', unsafe_allow_html=True)
     c1, c2 = st.columns(2)
@@ -232,11 +238,11 @@ with st.sidebar:
     st.markdown('<div class="sidebar-section">Try asking</div>', unsafe_allow_html=True)
     for icon, text in [
         ("💰","Top 10 customers by total sales"),
-        ("📦","Best-selling products"),
-        ("📅","Monthly revenue trend"),
-        ("🌍","Sales breakdown by country"),
+        ("📦","Best-selling products by revenue"),
+        ("📅","Monthly sales trend"),
+        ("🎨","Sales by product category"),
         ("⚡","Average order value by category"),
-        ("👥","Customer count by gender"),
+        ("📈","Year over year sales growth"),
     ]:
         if st.button(f"{icon} {text}", key=text):
             st.session_state["prefill"] = text
@@ -470,7 +476,7 @@ if question:
         try:
             # ── REPORT REQUEST ─────────────────────────────────────────────────
             if is_report_request(question):
-                sections_plan = plan_report_sections(question)
+                sections_plan = plan_report_sections(question, schema)
                 report_title  = get_report_title(question)
                 sections      = []
                 summary_stats = {}

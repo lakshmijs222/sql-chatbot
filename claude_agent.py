@@ -11,8 +11,11 @@ client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _SYSTEM_PROMPT = """You are a senior T-SQL data analyst. Your ONLY job is to write SQL queries.
 
-Database: DataWarehouseAnalytics (SQL Server)
-Schema:
+You are connected to a SQL Server database. The EXACT schema (tables, columns, data types)
+is provided below. This schema is the SINGLE SOURCE OF TRUTH — only use table and column
+names that actually appear in it. Never invent table or column names.
+
+DATABASE SCHEMA:
 {schema}
 
 STRICT RULES — NO EXCEPTIONS:
@@ -20,22 +23,27 @@ STRICT RULES — NO EXCEPTIONS:
 2. NEVER explain, apologize, or add text outside the code block.
 3. NEVER say "I cannot" — always attempt the SQL.
 4. Only SELECT statements — never DROP, DELETE, UPDATE, INSERT.
+5. Use ONLY tables/columns from the schema above. Match names EXACTLY (including the schema prefix).
 
 GENERAL SQL RULES:
-- Fully qualified names: [gold].[dim_customers], [gold].[dim_products], [gold].[fact_sales]
-- Joins: fact_sales → dim_customers ON customer_key | fact_sales → dim_products ON product_key
+- Always use fully qualified, bracketed names: [SchemaName].[TableName]
+- Infer JOINs from matching key columns (e.g. an ID column shared between two tables,
+  like Customer.CustomerID = SalesOrderHeader.CustomerID).
 - Use DATEPART(YEAR, col) / DATEPART(MONTH, col) — never YEAR() or MONTH()
-- ALWAYS wrap DATEPART results with CAST(...AS INT) — e.g. CAST(DATEPART(YEAR, order_date) AS INT)
-- ALWAYS wrap SUM(sales_amount) with CAST(...AS BIGINT) to avoid float display
-- ALWAYS wrap LAG() on integer columns with CAST(...AS BIGINT)
-- Use CAST(col AS FLOAT) only for division — never leave raw DATEPART as the return type
+- ALWAYS wrap DATEPART results with CAST(... AS INT) — e.g. CAST(DATEPART(YEAR, OrderDate) AS INT)
+- ALWAYS wrap SUM of amounts with CAST(... AS DECIMAL(18,2)) or BIGINT to control display
+- ALWAYS wrap LAG() on numeric columns with a matching CAST to keep the type consistent
+- Use CAST(col AS FLOAT) only for division — to avoid integer truncation
 - Use NULLIF(denominator, 0) to prevent divide-by-zero errors
 - Use CTEs (WITH ...) for multi-step calculations
-- Use clear aliases: total_sales, growth_pct, rank_num, running_total, pct_of_total etc.
-- TOP 100 default unless aggregating or user specifies a count
+- Use clear, business-friendly aliases: total_sales, growth_pct, rank_num, running_total etc.
+- TOP 100 default unless aggregating or the user specifies a count
+- To build a person's full name, concatenate the available name columns (e.g. FirstName + ' ' + LastName)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ANALYTICS OPERATION REFERENCE
+ANALYTICS TECHNIQUE TEMPLATES
+(These show the CORRECT SQL TECHNIQUE. The table/column names below are illustrative —
+ ALWAYS replace them with the real table/column names from the schema above.)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1. YEAR-OVER-YEAR GROWTH (%)
@@ -456,27 +464,27 @@ _REPORT_KEYWORDS = [
     "executive report", "business report",
 ]
 
-_REPORT_PLAN_PROMPT = """You are a senior data analyst. The user wants a report on their DataWarehouseAnalytics database.
+_REPORT_PLAN_PROMPT = """You are a senior data analyst. The user wants a report from their SQL database.
 
 User request: "{question}"
 
-Database tables:
-- gold.fact_sales     : order_number, product_key, customer_key, order_date, shipping_date, due_date, sales_amount, quantity, price
-- gold.dim_customers  : customer_key, customer_id, first_name, last_name, country, gender, marital_status, birthdate, create_date
-- gold.dim_products   : product_key, product_name, category, subcategory, product_line, cost, start_date
+The database has the following schema (tables, columns, data types):
+{schema}
 
-Return a JSON array of report sections. Each section has:
+Based ONLY on the tables and columns that actually exist in the schema above,
+plan a report as a JSON array of sections. Each section has:
 - "heading": section title (string)
-- "question": the specific data question this section answers (string)
+- "question": the specific data question this section answers, phrased in plain English (string)
 
-Return ONLY valid JSON array, no explanation. Example:
+Return ONLY a valid JSON array, no explanation. Example format:
 [
-  {{"heading": "Total Revenue Overview", "question": "Show total sales, total orders and total quantity sold overall"}},
-  {{"heading": "Sales by Year", "question": "Show total sales and orders by year"}},
-  {{"heading": "Top 10 Customers", "question": "Top 10 customers by total sales amount"}}
+  {{"heading": "Overall Summary", "question": "Show total revenue, total orders and total quantity overall"}},
+  {{"heading": "Sales by Year", "question": "Show total sales and order count by year"}},
+  {{"heading": "Top 10 Customers", "question": "Top 10 customers by total amount spent"}}
 ]
 
-Plan 4-6 sections relevant to the user's request. Always include an overview/summary section first.
+Plan 4-6 sections relevant to the user's request and grounded in the real schema.
+Always include an overview/summary section first.
 """
 
 _REPORT_TITLE_PROMPT = """Given this report request: "{question}"
@@ -490,11 +498,11 @@ def is_report_request(question: str) -> bool:
     return any(kw in q for kw in _REPORT_KEYWORDS)
 
 
-def plan_report_sections(question: str) -> list:
+def plan_report_sections(question: str, schema: str = "") -> list:
     """Ask Claude to plan what sections the report should have."""
     import json
     raw = _call_claude(
-        messages=[{"role": "user", "content": _REPORT_PLAN_PROMPT.format(question=question)}],
+        messages=[{"role": "user", "content": _REPORT_PLAN_PROMPT.format(question=question, schema=schema)}],
     )
     # Extract JSON array
     match = re.search(r"\[.*\]", raw, re.DOTALL)
