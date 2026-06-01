@@ -6,8 +6,10 @@ import markdown as md_lib
 from datetime import datetime
 from database import get_schema, run_query, list_tables
 from config import DB_NAME
-from claude_agent import generate_sql, repair_sql, explain_results, is_report_request, plan_report_sections, get_report_title
+from claude_agent import (generate_sql, repair_sql, explain_results, is_report_request,
+                          is_ppt_request, plan_report_sections, get_report_title)
 from report_generator import generate_report
+from ppt_generator import generate_ppt
 from auth import require_auth
 from logger import log_query
 import cache as query_cache
@@ -471,10 +473,12 @@ for i, msg in enumerate(st.session_state.messages):
             st.markdown('<span class="cache-badge">⚡ Cached result</span>', unsafe_allow_html=True)
         render_ai_bubble(msg["content"])
         if "report_bytes" in msg:
-            st.download_button(label="📄 Download Report (.docx)", data=msg["report_bytes"],
-                               file_name=msg.get("report_filename", "report.docx"),
-                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                               key=f"report_hist_{i}")
+            st.download_button(
+                label=msg.get("report_label", "📄 Download Report (.docx)"),
+                data=msg["report_bytes"],
+                file_name=msg.get("report_filename", "report.docx"),
+                mime=msg.get("report_mime", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                key=f"report_hist_{i}")
         if "dataframe" in msg:
             render_table(msg["dataframe"], key=f"hist_{i}")
         if "sql" in msg:
@@ -498,39 +502,64 @@ if question:
         df = pd.DataFrame()
         error_msg = None
 
+        def _build_sections(plan, progress, label_word):
+            """Run each planned section's SQL and collect results + summary stats."""
+            secs, stats = [], {}
+            total = len(plan)
+            for idx, sec in enumerate(plan):
+                progress.progress(idx / total, text=f"{label_word} {idx+1}/{total}: {sec['heading']}...")
+                try:
+                    sec_sql = generate_sql(sec["question"], schema)
+                    try:
+                        sec_df = run_query(sec_sql)
+                    except Exception as db_err:
+                        sec_sql = repair_sql(sec_sql, str(db_err), schema)
+                        sec_df  = run_query(sec_sql)
+                    sec_explanation = explain_results(sec["question"], sec_sql, sec_df)
+                    log_query(username, sec["question"], sec_sql, len(sec_df))
+                    secs.append({"heading": sec["heading"], "explanation": sec_explanation,
+                                 "df": sec_df if not sec_df.empty else None, "sql": sec_sql})
+                    if idx == 0 and not sec_df.empty:
+                        for col in sec_df.select_dtypes(include="number").columns[:4]:
+                            val = sec_df[col].sum()
+                            lbl = col.replace("_", " ").title()
+                            stats[lbl] = f"{int(val):,}" if pd.api.types.is_integer_dtype(sec_df[col]) else f"{val:,.0f}"
+                except Exception as sec_err:
+                    secs.append({"heading": sec["heading"],
+                                 "explanation": f"Could not generate this section: {sec_err}",
+                                 "df": None, "sql": ""})
+            return secs, stats
+
         try:
+            # ── PPT / PRESENTATION REQUEST ─────────────────────────────────────
+            if is_ppt_request(question):
+                sections_plan = plan_report_sections(question, schema)
+                ppt_title     = get_report_title(question)
+                progress      = st.progress(0, text="Building presentation...")
+                sections, summary_stats = _build_sections(sections_plan, progress, "Slide")
+                progress.progress(1.0, text="Finalising slides...")
+                ppt_bytes = generate_ppt(title=ppt_title, sections=sections,
+                                         summary_stats=summary_stats, username=username)
+                progress.empty()
+
+                reply = f"Your **{ppt_title}** presentation is ready with **{len(sections) + 2} slides**."
+                render_ai_bubble(reply)
+                fn = ppt_title.replace(" ", "_")[:40] + f"_{ts}.pptx"
+                st.download_button(label="📊 Download Presentation (.pptx)", data=ppt_bytes,
+                                   file_name=fn,
+                                   mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                   key=f"ppt_{ts}")
+                st.session_state.messages.append({"role": "assistant", "content": reply,
+                                                   "report_bytes": ppt_bytes, "report_filename": fn,
+                                                   "report_mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                                   "report_label": "📊 Download Presentation (.pptx)", "ts": ts})
+
             # ── REPORT REQUEST ─────────────────────────────────────────────────
-            if is_report_request(question):
+            elif is_report_request(question):
                 sections_plan = plan_report_sections(question, schema)
                 report_title  = get_report_title(question)
-                sections      = []
-                summary_stats = {}
-                total         = len(sections_plan)
                 progress      = st.progress(0, text="Building report...")
-
-                for idx, sec in enumerate(sections_plan):
-                    progress.progress(idx / total, text=f"Section {idx+1}/{total}: {sec['heading']}...")
-                    try:
-                        sec_sql = generate_sql(sec["question"], schema)
-                        try:
-                            sec_df = run_query(sec_sql)
-                        except Exception as db_err:
-                            sec_sql = repair_sql(sec_sql, str(db_err), schema)
-                            sec_df  = run_query(sec_sql)
-                        sec_explanation = explain_results(sec["question"], sec_sql, sec_df)
-                        log_query(username, sec["question"], sec_sql, len(sec_df))
-                        sections.append({"heading": sec["heading"], "explanation": sec_explanation,
-                                         "df": sec_df if not sec_df.empty else None, "sql": sec_sql})
-                        if idx == 0 and not sec_df.empty:
-                            for col in sec_df.select_dtypes(include="number").columns[:4]:
-                                val = sec_df[col].sum()
-                                label = col.replace("_", " ").title()
-                                summary_stats[label] = f"{int(val):,}" if pd.api.types.is_integer_dtype(sec_df[col]) else f"{val:,.0f}"
-                    except Exception as sec_err:
-                        sections.append({"heading": sec["heading"],
-                                         "explanation": f"Could not generate this section: {sec_err}",
-                                         "df": None, "sql": ""})
-
+                sections, summary_stats = _build_sections(sections_plan, progress, "Section")
                 progress.progress(1.0, text="Finalising...")
                 doc_bytes = generate_report(title=report_title, sections=sections,
                                             summary_stats=summary_stats, username=username)

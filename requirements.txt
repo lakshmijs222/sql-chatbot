@@ -7,3 +7,4 @@ pandas
 bcrypt
 markdown
 python-docx
+python-pptx

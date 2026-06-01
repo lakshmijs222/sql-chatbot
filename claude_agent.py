@@ -452,6 +452,12 @@ def explain_results(question: str, sql: str, df) -> str:
     )
 
 
+# ── PPT keywords detection ──────────────────────────────────────────────────
+_PPT_KEYWORDS = [
+    "ppt", "power point", "powerpoint", "presentation", "slide deck",
+    "slides", "deck", "pptx", "slide",
+]
+
 # ── Report keywords detection ──────────────────────────────────────────────────
 _REPORT_KEYWORDS = [
     "prepare report", "generate report", "create report", "make report",
@@ -463,6 +469,11 @@ _REPORT_KEYWORDS = [
     "report on", "report for", "full report", "detailed report",
     "executive report", "business report",
 ]
+
+
+def is_ppt_request(question: str) -> bool:
+    q = question.lower().strip()
+    return any(kw in q for kw in _PPT_KEYWORDS)
 
 _REPORT_PLAN_PROMPT = """You are a senior data analyst. The user wants a report from their SQL database.
 
